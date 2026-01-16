@@ -1,0 +1,9 @@
+created_at_kst=2026-01-14T16:27:31.522893+09:00
+building_id=1
+start_date=2025-12-01
+end_date=2026-01-01
+run_id=auto_20260114_162730
+csv_path=/home/ssm-user/jupyter/output/tagging/tagged_1_202512_auto_20260114_162730.csv
+voc_rows=26
+subject_tax_rows=20
+work_tax_rows=11

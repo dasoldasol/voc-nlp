@@ -1,0 +1,7 @@
+.env
+*credentials*
+*.pem
+__pycache__/
+*.pyc
+*.log
+/notebooks/
