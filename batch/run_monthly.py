@@ -45,6 +45,13 @@ DEFAULT_ENV_PATH = "/home/ssm-user/jupyter/.env"
 DEFAULT_LOG_DIR = "/home/ssm-user/jupyter/logs"
 
 BATCH_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(BATCH_DIR)
+
+# 환경별 .env 파일 경로 매핑
+ENV_PATHS = {
+    "prd": "/home/ssm-user/jupyter/.env",
+    "dev": os.path.join(PROJECT_ROOT, ".env.local"),
+}
 if BATCH_DIR not in sys.path:
     sys.path.insert(0, BATCH_DIR)
 
@@ -973,8 +980,9 @@ def run_monthly_batch(
         logger.info(f"    검수시트  : https://docs.google.com/spreadsheets/d/{gspread_mgr.spreadsheet_id}/")
     logger.info(f"    LOG       : {log_path}")
     log_separator()
-    
-    return {
+
+    # 11) 배치 실행 메타데이터 저장
+    batch_result = {
         "mode": mode,
         "start_time": start_time.isoformat(),
         "end_time": end_time.isoformat(),
@@ -988,6 +996,22 @@ def run_monthly_batch(
         "failed": failed_count,
         "results": results,
     }
+
+    if not dry_run:
+        import json
+        runs_dir = os.path.join(env_config["OUT_DIR"], "runs")
+        os.makedirs(runs_dir, exist_ok=True)
+        meta_filename = f"run_monthly_{mode}_{run_id}.json"
+        meta_path = os.path.join(runs_dir, meta_filename)
+
+        try:
+            with open(meta_path, "w", encoding="utf-8") as f:
+                json.dump(batch_result, f, ensure_ascii=False, indent=2)
+            logger.info(f"[INFO] 배치 메타데이터 저장: {meta_path}")
+        except Exception as e:
+            logger.warning(f"[WARN] 메타데이터 저장 실패: {e}")
+
+    return batch_result
 
 
 # =========================================================
@@ -1004,26 +1028,27 @@ def parse_args():
   tagging-only : 태깅 → 검수시트만 (HTML 안 만듦)
 
 사용 예시:
-  # [현재] 1단계: 자동태깅 + HTML + 검수시트 업로드
-  python run_monthly.py --mode full --all-buildings --auto-month
+  # 로컬 개발 환경에서 특정 빌딩 테스트
+  python run_monthly.py --env dev --mode full --building-id 95 --year 2025 --month 12
 
-  # [현재] 2단계: 검수 완료 후 HTML 재생성
-  python run_monthly.py --mode refresh --all-buildings --auto-month
+  # EC2 운영 환경에서 전체 빌딩 처리
+  python run_monthly.py --env prd --mode full --all-buildings --auto-month
 
-  # 특정 빌딩만 테스트
-  python run_monthly.py --mode full --building-id 95 --year 2025 --month 12
+  # 검수 완료 후 HTML 재생성 (운영)
+  python run_monthly.py --env prd --mode refresh --all-buildings --auto-month
 
-  # 실행 계획만 확인
-  python run_monthly.py --mode full --all-buildings --auto-month --dry-run
+  # 실행 계획만 확인 (dry-run)
+  python run_monthly.py --env dev --mode full --building-id 95 --year 2025 --month 12 --dry-run
         """,
     )
     
     parser.add_argument("--mode", type=str, default=MODE_FULL,
                         choices=[MODE_FULL, MODE_REFRESH, MODE_TAGGING_ONLY],
                         help=f"실행 모드 (기본: {MODE_FULL})")
-    
-    parser.add_argument("--env-path", type=str, default=None,
-                        help=f".env 파일 경로 (기본: {DEFAULT_ENV_PATH})")
+
+    parser.add_argument("--env", "-e", type=str, default="prd",
+                        choices=["prd", "dev"],
+                        help="실행 환경 (prd: EC2 운영, dev: 로컬 개발, 기본: prd)")
     
     parser.add_argument("--all-buildings", "-a", action="store_true",
                         help="모든 활성 Building 처리")
@@ -1064,10 +1089,13 @@ def main():
     
     if args.year and args.auto_month:
         print("[WARN] --year/--month와 --auto-month 함께 지정됨. --year/--month 우선.")
-    
+
+    # 환경별 .env 경로 매핑
+    env_path = ENV_PATHS.get(args.env, DEFAULT_ENV_PATH)
+
     result = run_monthly_batch(
         mode=args.mode,
-        env_path=args.env_path,
+        env_path=env_path,
         all_buildings=args.all_buildings,
         auto_month=args.auto_month,
         year=args.year,

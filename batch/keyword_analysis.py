@@ -34,8 +34,8 @@ def _apply_notebook_style():
     mpl.rcParams["axes.facecolor"] = "#EAEAF2"
     mpl.rcParams["axes.unicode_minus"] = False
 
-    # 한글 폰트 강제
-    font_path = "/usr/share/fonts/nanum/NanumGothic-Regular.ttf"
+    # 한글 폰트 강제 (환경변수 또는 기본 경로)
+    font_path = os.getenv("NANUM_FONT_PATH", "/usr/share/fonts/nanum/NanumGothic-Regular.ttf")
     if os.path.exists(font_path):
         try:
             fm.fontManager.addfont(font_path)
