@@ -661,6 +661,7 @@ class GSpreadManager:
             major_validations = {
                 "검수_주제 대분류": subject_majors,
                 "검수_작업유형 대분류": work_majors,
+                "검수완료": ["Y"],
             }
             
             for col_name, values in major_validations.items():

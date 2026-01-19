@@ -50,7 +50,8 @@ def db_connect():
 def fetch_active_building_ids() -> list[int]:
     """
     활성 상태(state='ONGOING_OPERATING')인 Building ID 목록을 조회합니다.
-    
+    - 'insite' 또는 '시연'이 포함된 건물명은 제외
+
     Returns:
         list[int]: 활성 Building ID 목록 (id 오름차순)
         실패 시 빈 리스트 반환 (배치 안정성 우선)
@@ -60,11 +61,13 @@ def fetch_active_building_ids() -> list[int]:
     try:
         conn = db_connect()
         cursor = conn.cursor()
-        
+
         cursor.execute("""
             SELECT id
             FROM building
             WHERE state = 'ONGOING_OPERATING'
+              AND LOWER(name) NOT LIKE '%%insite%%'
+              AND name NOT LIKE '%%시연%%'
             ORDER BY id ASC
         """)
         
@@ -91,7 +94,8 @@ def fetch_active_building_ids() -> list[int]:
 def fetch_active_buildings() -> list[dict]:
     """
     활성 상태(state='ONGOING_OPERATING')인 Building 정보를 조회합니다.
-    
+    - 'insite' 또는 '시연'이 포함된 건물명은 제외
+
     Returns:
         list[dict]: Building 정보 목록 (id, name 포함)
         실패 시 빈 리스트 반환 (배치 안정성 우선)
@@ -101,11 +105,13 @@ def fetch_active_buildings() -> list[dict]:
     try:
         conn = db_connect()
         cursor = conn.cursor()
-        
+
         cursor.execute("""
             SELECT id, name
             FROM building
             WHERE state = 'ONGOING_OPERATING'
+              AND LOWER(name) NOT LIKE '%%insite%%'
+              AND name NOT LIKE '%%시연%%'
             ORDER BY id ASC
         """)
         
