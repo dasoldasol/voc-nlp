@@ -440,39 +440,10 @@ def process_building_full(
     else:
         logger.info(f"  [{building_id}] {building_name}")
 
-    # VOC 데이터 없으면 빈 파일만 빠르게 생성
+    # VOC 데이터 없으면 완전 스킵 (빈 파일 생성 안 함)
     if voc_count == 0:
-        logger.info(f"    [SKIP] 빈 파일 생성")
+        logger.info(f"    [SKIP] 데이터 없음")
         result["skipped"] = True
-
-        if not dry_run:
-            # 빈 CSV/HTML 생성을 위해 태깅과 HTML 생성은 수행
-            tagging_result = run_tagging(
-                building_id, building_name, start_date, end_date,
-                run_id, env_config, dry_run
-            )
-            result["tagging"] = tagging_result
-
-            if tagging_result["success"]:
-                analysis_result = run_analysis(
-                    building_id, building_name, start_date, end_date,
-                    run_id, env_config, dry_run=dry_run
-                )
-                result["analysis"] = analysis_result
-
-            # S3 업로드 (빈 파일도 업로드)
-            if s3_uploader and s3_uploader.is_available():
-                tagging_dir = os.path.join(env_config["OUT_DIR"], "tagging")
-                html_dir = os.path.join(env_config["OUT_DIR"], "html")
-                s3_result = s3_uploader.upload_building_outputs(
-                    building_id=building_id,
-                    yyyymm=yyyymm,
-                    run_id=run_id,
-                    tagging_dir=tagging_dir,
-                    html_dir=html_dir,
-                )
-                result["s3_upload"] = s3_result
-
         result["success"] = True
         return result
 
