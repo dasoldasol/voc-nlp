@@ -24,7 +24,7 @@ S3 경로 구조:
   # [미래] 학습된 모델로 전체 실행
   python run_monthly.py --mode full --all-buildings --auto-month
 """
-from common_db import load_dotenv, fetch_active_buildings
+from common_db import load_dotenv, fetch_active_buildings, fetch_voc_counts_by_buildings
 from s3_uploader import get_s3_uploader
 from gspread_manager import get_gspread_manager
 import os
@@ -416,13 +416,16 @@ def process_building_full(
     s3_uploader,
     gspread_mgr,
     dry_run: bool = False,
+    voc_count: int = -1,
 ) -> Dict:
     """full 모드: 태깅 → HTML → S3 → 검수시트"""
-    
+
     result = {
         "building_id": building_id,
         "building_name": building_name,
         "success": False,
+        "voc_count": voc_count,
+        "skipped": False,
         "tagging": None,
         "analysis": None,
         "s3_upload": None,
@@ -430,10 +433,49 @@ def process_building_full(
         "error_stage": None,
         "error_message": None,
     }
-    
-    logger.info("")
-    logger.info(f"  [{building_id}] {building_name}")
-    
+
+    # VOC 건수 표시
+    if voc_count >= 0:
+        logger.info(f"  [{building_id}] {building_name} ({voc_count}건)")
+    else:
+        logger.info(f"  [{building_id}] {building_name}")
+
+    # VOC 데이터 없으면 빈 파일만 빠르게 생성
+    if voc_count == 0:
+        logger.info(f"    [SKIP] 빈 파일 생성")
+        result["skipped"] = True
+
+        if not dry_run:
+            # 빈 CSV/HTML 생성을 위해 태깅과 HTML 생성은 수행
+            tagging_result = run_tagging(
+                building_id, building_name, start_date, end_date,
+                run_id, env_config, dry_run
+            )
+            result["tagging"] = tagging_result
+
+            if tagging_result["success"]:
+                analysis_result = run_analysis(
+                    building_id, building_name, start_date, end_date,
+                    run_id, env_config, dry_run=dry_run
+                )
+                result["analysis"] = analysis_result
+
+            # S3 업로드 (빈 파일도 업로드)
+            if s3_uploader and s3_uploader.is_available():
+                tagging_dir = os.path.join(env_config["OUT_DIR"], "tagging")
+                html_dir = os.path.join(env_config["OUT_DIR"], "html")
+                s3_result = s3_uploader.upload_building_outputs(
+                    building_id=building_id,
+                    yyyymm=yyyymm,
+                    run_id=run_id,
+                    tagging_dir=tagging_dir,
+                    html_dir=html_dir,
+                )
+                result["s3_upload"] = s3_result
+
+        result["success"] = True
+        return result
+
     # 1) 태깅
     logger.info(f"  [1/4] 태깅")
     tagging_result = run_tagging(
@@ -881,15 +923,34 @@ def run_monthly_batch(
         except Exception as e:
             logger.warning(f"  [WARN] taxonomy 조회 실패: {e}")
     
-    # 9) Building 처리
+    # 9) VOC 건수 사전 조회
+    logger.info("")
+    logger.info("VOC 건수 사전 조회")
+
+    building_ids = [b["id"] for b in buildings]
+    voc_counts = fetch_voc_counts_by_buildings(building_ids, start_date, end_date)
+
+    buildings_with_data = [bid for bid, cnt in voc_counts.items() if cnt > 0]
+    buildings_without_data = [bid for bid, cnt in voc_counts.items() if cnt == 0]
+    total_voc_count = sum(voc_counts.values())
+
+    logger.info(f"  데이터 있음   : {len(buildings_with_data)}개 빌딩 (총 {total_voc_count}건)")
+    logger.info(f"  데이터 없음   : {len(buildings_without_data)}개 빌딩")
+
+    log_separator()
+
+    # 10) Building 처리
     results = []
     success_count = 0
     failed_count = 0
-    
+    skip_count = 0
+
     logger.info("")
     logger.info("Building 처리 시작")
-    
+
     for idx, bldg in enumerate(buildings, 1):
+        voc_count = voc_counts.get(bldg["id"], 0)
+
         logger.info("")
         logger.info(f"[{idx}/{len(buildings)}]")
         
@@ -905,6 +966,7 @@ def run_monthly_batch(
                 s3_uploader=s3_uploader,
                 gspread_mgr=gspread_mgr,
                 dry_run=dry_run,
+                voc_count=voc_count,
             )
         elif mode == MODE_REFRESH:
             result = process_building_refresh(
@@ -936,22 +998,25 @@ def run_monthly_batch(
             continue
         
         results.append(result)
-        
+
         if result["success"]:
             success_count += 1
+            if result.get("skipped"):
+                skip_count += 1
         else:
             failed_count += 1
-    
+
     end_time = datetime.now(KST)
     elapsed = end_time - start_time
-    
-    # 10) 최종 결과
+
+    # 11) 최종 결과
     logger.info("")
     log_separator()
     logger.info("배치 완료")
     log_separator()
     logger.info(f"  실행 모드  : {mode}")
-    logger.info(f"  처리 성공  : {success_count}개")
+    logger.info(f"  총 VOC     : {total_voc_count}건 ({len(buildings_with_data)}개 빌딩)")
+    logger.info(f"  처리 성공  : {success_count}개 (데이터 있음: {success_count - skip_count}, 빈 파일: {skip_count})")
     logger.info(f"  처리 실패  : {failed_count}개")
     logger.info(f"  소요시간   : {elapsed}")
     
@@ -981,7 +1046,7 @@ def run_monthly_batch(
     logger.info(f"    LOG       : {log_path}")
     log_separator()
 
-    # 11) 배치 실행 메타데이터 저장
+    # 12) 배치 실행 메타데이터 저장
     batch_result = {
         "mode": mode,
         "start_time": start_time.isoformat(),
@@ -994,6 +1059,11 @@ def run_monthly_batch(
         "total": len(buildings),
         "success": success_count,
         "failed": failed_count,
+        "skipped": skip_count,
+        "total_voc_count": total_voc_count,
+        "buildings_with_data": len(buildings_with_data),
+        "buildings_without_data": len(buildings_without_data),
+        "voc_counts": voc_counts,
         "results": results,
     }
 

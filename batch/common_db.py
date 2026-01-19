@@ -132,6 +132,72 @@ def fetch_active_buildings() -> list[dict]:
             pass
 
 
+def fetch_voc_counts_by_buildings(building_ids: list[int], start_date: str, end_date: str) -> dict[int, int]:
+    """
+    여러 빌딩의 VOC 건수를 한 번에 조회합니다.
+
+    Args:
+        building_ids: 빌딩 ID 목록
+        start_date: 시작일 (inclusive)
+        end_date: 종료일 (exclusive)
+
+    Returns:
+        dict[int, int]: {building_id: voc_count, ...}
+        조회되지 않은 빌딩은 0으로 채워서 반환
+    """
+    if not building_ids:
+        return {}
+
+    conn = None
+    cursor = None
+    try:
+        conn = db_connect()
+        cursor = conn.cursor()
+
+        # IN 절을 위한 플레이스홀더 생성
+        placeholders = ",".join(["%s"] * len(building_ids))
+
+        query = f"""
+            SELECT building_id, COUNT(*) as cnt
+            FROM voc
+            WHERE building_id IN ({placeholders})
+              AND title NOT LIKE '%%테스트%%'
+              AND voc_date >= %s
+              AND voc_date < %s
+            GROUP BY building_id
+        """
+
+        params = list(building_ids) + [start_date, end_date]
+        cursor.execute(query, params)
+
+        rows = cursor.fetchall()
+        result = {int(row[0]): int(row[1]) for row in rows if row}
+
+        # 조회되지 않은 빌딩은 0으로 채움
+        for bid in building_ids:
+            if bid not in result:
+                result[bid] = 0
+
+        return result
+
+    except Exception as e:
+        print(f"[WARN] fetch_voc_counts_by_buildings 실패: {e}")
+        # 실패 시 모든 빌딩 0으로 반환 (배치 안정성)
+        return {bid: 0 for bid in building_ids}
+
+    finally:
+        try:
+            if cursor is not None:
+                cursor.close()
+        except Exception:
+            pass
+        try:
+            if conn is not None:
+                conn.close()
+        except Exception:
+            pass
+
+
 def load_text_dict_from_db() -> tuple[dict, set]:
     """
     stat_text_dict 기준:
