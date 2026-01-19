@@ -1018,6 +1018,10 @@ def run_monthly_batch(
     log_separator()
 
     # 12) 배치 실행 메타데이터 저장
+    # 데이터 있는 빌딩만 voc_counts와 results에 저장
+    voc_counts_with_data = {bid: cnt for bid, cnt in voc_counts.items() if cnt > 0}
+    results_with_data = [r for r in results if not r.get("skipped", False)]
+
     batch_result = {
         "mode": mode,
         "start_time": start_time.isoformat(),
@@ -1032,10 +1036,11 @@ def run_monthly_batch(
         "failed": failed_count,
         "skipped": skip_count,
         "total_voc_count": total_voc_count,
-        "buildings_with_data": len(buildings_with_data),
-        "buildings_without_data": len(buildings_without_data),
-        "voc_counts": voc_counts,
-        "results": results,
+        "buildings_with_data_count": len(buildings_with_data),
+        "buildings_without_data_count": len(buildings_without_data),
+        "voc_counts": voc_counts_with_data,
+        "buildings_without_data_ids": buildings_without_data,
+        "results": results_with_data,
     }
 
     if not dry_run:
