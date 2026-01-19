@@ -153,6 +153,7 @@ def build_report_context(
     kw_imgs: List[str],
     wc_img: str,
     hm_imgs: List[str],
+    is_empty: bool = False,
 ) -> Dict[str, Any]:
     report_month = start_date.replace("-", "")[:6]
     report_month_fmt = f"{report_month[:4]}.{report_month[4:]}" if len(report_month) == 6 else report_month
@@ -171,6 +172,7 @@ def build_report_context(
         "kw_imgs": kw_imgs,
         "wc_img": wc_img,
         "hm_imgs": hm_imgs,
+        "is_empty": is_empty,
     }
 
 
@@ -222,6 +224,16 @@ def render_report_html(ctx: Dict[str, Any]) -> str:
         <div class="report-title">월간 VOC 분석 보고서</div>
       </div>
     """)
+
+    # 빈 데이터 경고 배너
+    if ctx.get("is_empty", False):
+        html.append(f"""
+        <div style="background-color: #ffcccc; border: 2px solid #cc0000; color: #cc0000;
+                    padding: 15px; margin: 20px 0; border-radius: 5px; text-align: center;
+                    font-size: 16px; font-weight: bold;">
+            해당 기간({ctx['start_date']} ~ {ctx['end_date']}) VOC 데이터가 없습니다.
+        </div>
+        """)
 
     html.append("<h1>분석 보고서 개요</h1>")
     html.append(f"<div class='meta'><b>현장명</b> : {ctx['building_name']}</div>")

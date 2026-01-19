@@ -911,6 +911,9 @@ def main():
     # ---- 리포트 헤더 데이터 ----
     building_name = fetch_building_name(building_id) or f"BUILDING_ID={building_id}"
 
+    # 빈 데이터 여부 확인
+    is_empty = df.empty
+
     ctx = build_report_context(
         building_id=building_id,
         building_name=building_name,
@@ -924,6 +927,7 @@ def main():
         kw_imgs=kw_imgs,
         wc_img=wc_img,
         hm_imgs=hm_imgs,
+        is_empty=is_empty,
     )
 
     final_html = render_report_html(ctx)
