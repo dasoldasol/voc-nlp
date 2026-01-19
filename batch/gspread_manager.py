@@ -532,11 +532,16 @@ class GSpreadManager:
     
     def update_taxonomy_sheet(self, taxonomy_df: pd.DataFrame) -> Dict:
         """
-        taxonomy 시트 업데이트 (대분류-중분류 쌍으로 저장)
-        
+        taxonomy 시트 업데이트 (대분류별 열로 저장 - 종속 드롭다운용)
+
+        구조:
+          - 주제 대분류들 (시설, 서비스, ...) 각각 열로
+          - 작업유형 대분류들 (작업, 점검, ...) 각각 열로
+          - 각 열 아래에 해당 중분류 나열
+
         Args:
             taxonomy_df: DataFrame with columns [taxonomy_type, major, minor]
-        
+
         Returns:
             dict: {"success": bool, "error": str}
         """
@@ -544,76 +549,170 @@ class GSpreadManager:
             "success": False,
             "error": "",
         }
-        
+
         if not self.is_available():
             result["error"] = self._init_error or "GSpread 미초기화"
             return result
-        
+
         try:
             # taxonomy 시트 가져오기/생성
             tab_name = "_taxonomy"
-            worksheet = self._get_or_create_worksheet(tab_name, rows=500, cols=10)
+            worksheet = self._get_or_create_worksheet(tab_name, rows=500, cols=30)
             if worksheet is None:
                 result["error"] = f"탭 생성/접근 실패: {tab_name}"
                 return result
-            
+
             # 시트 클리어
             worksheet.clear()
-            
+
             # SUBJECT와 WORK 분리
             subject_df = taxonomy_df[taxonomy_df["taxonomy_type"] == "SUBJECT"].copy()
             work_df = taxonomy_df[taxonomy_df["taxonomy_type"] == "WORK"].copy()
-            
-            # 주제: 대분류-중분류 쌍 (중복 제거, 정렬)
-            subject_pairs = subject_df[["major", "minor"]].drop_duplicates().sort_values(["major", "minor"]).values.tolist()
-            
-            # 작업유형: 대분류-중분류 쌍 (중복 제거, 정렬)
-            work_pairs = work_df[["major", "minor"]].drop_duplicates().sort_values(["major", "minor"]).values.tolist()
-            
+
+            # 주제: 대분류별 중분류 매핑
+            subject_major_to_minors = {}
+            for _, row in subject_df.iterrows():
+                major = str(row["major"]).strip()
+                minor = str(row["minor"]).strip()
+                if major and minor:
+                    if major not in subject_major_to_minors:
+                        subject_major_to_minors[major] = set()
+                    subject_major_to_minors[major].add(minor)
+
+            # 작업유형: 대분류별 중분류 매핑
+            work_major_to_minors = {}
+            for _, row in work_df.iterrows():
+                major = str(row["major"]).strip()
+                minor = str(row["minor"]).strip()
+                if major and minor:
+                    if major not in work_major_to_minors:
+                        work_major_to_minors[major] = set()
+                    work_major_to_minors[major].add(minor)
+
+            # 정렬
+            subject_majors = sorted(subject_major_to_minors.keys())
+            work_majors = sorted(work_major_to_minors.keys())
+
+            for major in subject_major_to_minors:
+                subject_major_to_minors[major] = sorted(subject_major_to_minors[major])
+            for major in work_major_to_minors:
+                work_major_to_minors[major] = sorted(work_major_to_minors[major])
+
+            # 헤더: 주제_대분류명, ..., 작업유형_대분류명, ...
+            headers = []
+            for major in subject_majors:
+                headers.append(f"주제_{major}")
+            for major in work_majors:
+                headers.append(f"작업유형_{major}")
+
             # 최대 행 수 계산
-            max_len = max(len(subject_pairs), len(work_pairs))
-            
-            # 헤더
-            headers = ["주제_대분류", "주제_중분류", "작업유형_대분류", "작업유형_중분류"]
-            
+            max_minors = 0
+            for minors in subject_major_to_minors.values():
+                max_minors = max(max_minors, len(minors))
+            for minors in work_major_to_minors.values():
+                max_minors = max(max_minors, len(minors))
+
             # 데이터 준비
             rows = [headers]
-            for i in range(max_len):
+            for i in range(max_minors):
                 row = []
-                # 주제 대분류, 중분류
-                if i < len(subject_pairs):
-                    row.extend(subject_pairs[i])
-                else:
-                    row.extend(["", ""])
-                # 작업유형 대분류, 중분류
-                if i < len(work_pairs):
-                    row.extend(work_pairs[i])
-                else:
-                    row.extend(["", ""])
+                # 주제 중분류
+                for major in subject_majors:
+                    minors = subject_major_to_minors[major]
+                    if i < len(minors):
+                        row.append(minors[i])
+                    else:
+                        row.append("")
+                # 작업유형 중분류
+                for major in work_majors:
+                    minors = work_major_to_minors[major]
+                    if i < len(minors):
+                        row.append(minors[i])
+                    else:
+                        row.append("")
                 rows.append(row)
-            
+
             # 데이터 쓰기
             if rows:
                 worksheet.append_rows(rows)
-            
+
+            # Named Range 생성
+            self._create_named_ranges_for_taxonomy(worksheet, headers, max_minors)
+
             result["success"] = True
-            logger.info(f"taxonomy 시트 업데이트 완료: 주제 {len(subject_pairs)}쌍, 작업유형 {len(work_pairs)}쌍")
-            
+            logger.info(f"taxonomy 시트 업데이트 완료: 주제 대분류 {len(subject_majors)}개, 작업유형 대분류 {len(work_majors)}개")
+            logger.info(f"  주제 대분류: {subject_majors}")
+            logger.info(f"  작업유형 대분류: {work_majors}")
+
         except Exception as e:
             result["error"] = str(e)
             logger.error(f"taxonomy 시트 업데이트 실패: {e}")
-        
+
         return result
-    
-    def set_dropdown_validation(self, yyyymm: str) -> Dict:
+
+    def _create_named_ranges_for_taxonomy(self, worksheet, headers: List[str], max_rows: int):
         """
-        검수 컬럼에 드롭다운 유효성 검사 설정
-        - 대분류: _taxonomy 시트의 unique 값 참조
-        - 중분류: 대분류에 종속된 값 (FILTER 함수 사용)
-        
-        Args:
-            yyyymm: 대상 월 (탭 이름)
-        
+        taxonomy 시트의 각 열에 대해 Named Range 생성
+        - Named Range 이름: 열 헤더 (예: 주제_시설, 작업유형_작업)
+        - 범위: 해당 열의 데이터 (헤더 제외)
+        """
+        try:
+            # 기존 Named Range 삭제 (같은 이름이 있을 수 있음)
+            existing_ranges = self.spreadsheet.list_named_ranges()
+            existing_names = {nr["name"]: nr["namedRangeId"] for nr in existing_ranges}
+
+            requests = []
+
+            # 기존 Named Range 삭제 요청
+            for header in headers:
+                # Named Range 이름에 사용할 수 없는 문자 처리
+                range_name = header.replace(" ", "_").replace("-", "_").replace("/", "_")
+                if range_name in existing_names:
+                    requests.append({
+                        "deleteNamedRange": {
+                            "namedRangeId": existing_names[range_name]
+                        }
+                    })
+
+            # 삭제 실행
+            if requests:
+                self.spreadsheet.batch_update({"requests": requests})
+                requests = []
+
+            # 새 Named Range 생성 요청
+            for col_idx, header in enumerate(headers):
+                range_name = header.replace(" ", "_").replace("-", "_").replace("/", "_")
+
+                requests.append({
+                    "addNamedRange": {
+                        "namedRange": {
+                            "name": range_name,
+                            "range": {
+                                "sheetId": worksheet.id,
+                                "startRowIndex": 1,  # 헤더 제외
+                                "endRowIndex": 1 + max_rows,
+                                "startColumnIndex": col_idx,
+                                "endColumnIndex": col_idx + 1,
+                            }
+                        }
+                    }
+                })
+
+            # 생성 실행
+            if requests:
+                self.spreadsheet.batch_update({"requests": requests})
+                logger.info(f"Named Range 생성 완료: {len(headers)}개")
+
+        except Exception as e:
+            logger.warning(f"Named Range 생성 실패 (계속 진행): {e}")
+
+    def migrate_taxonomy_sheet(self) -> Dict:
+        """
+        기존 _taxonomy 시트(대분류-중분류 쌍)를 새 구조(대분류별 열)로 마이그레이션
+
+        기존 구조: 주제_대분류, 주제_중분류, 작업유형_대분류, 작업유형_중분류
+        새 구조: 주제_시설, 주제_서비스, ..., 작업유형_작업, 작업유형_점검, ...
+
         Returns:
             dict: {"success": bool, "error": str}
         """
@@ -621,54 +720,182 @@ class GSpreadManager:
             "success": False,
             "error": "",
         }
-        
+
         if not self.is_available():
             result["error"] = self._init_error or "GSpread 미초기화"
             return result
-        
+
+        try:
+            # 기존 _taxonomy 시트 읽기
+            tax_worksheet = self.spreadsheet.worksheet("_taxonomy")
+            tax_data = tax_worksheet.get_all_values()
+
+            if len(tax_data) < 2:
+                result["error"] = "_taxonomy 시트에 데이터 없음"
+                return result
+
+            tax_header = tax_data[0]
+            tax_rows = tax_data[1:]
+
+            # 기존 구조인지 확인 (주제_대분류, 주제_중분류 컬럼 존재)
+            if "주제_대분류" not in tax_header or "주제_중분류" not in tax_header:
+                # 이미 새 구조일 수 있음
+                logger.info("_taxonomy 시트가 이미 새 구조이거나 다른 형식입니다.")
+                result["success"] = True
+                return result
+
+            tax_df = pd.DataFrame(tax_rows, columns=tax_header)
+
+            # 대분류별 중분류 매핑 생성
+            subject_major_to_minors = {}
+            work_major_to_minors = {}
+
+            for _, row in tax_df.iterrows():
+                subj_major = str(row.get("주제_대분류", "")).strip()
+                subj_minor = str(row.get("주제_중분류", "")).strip()
+                work_major = str(row.get("작업유형_대분류", "")).strip()
+                work_minor = str(row.get("작업유형_중분류", "")).strip()
+
+                if subj_major and subj_minor:
+                    if subj_major not in subject_major_to_minors:
+                        subject_major_to_minors[subj_major] = set()
+                    subject_major_to_minors[subj_major].add(subj_minor)
+
+                if work_major and work_minor:
+                    if work_major not in work_major_to_minors:
+                        work_major_to_minors[work_major] = set()
+                    work_major_to_minors[work_major].add(work_minor)
+
+            # 정렬
+            subject_majors = sorted(subject_major_to_minors.keys())
+            work_majors = sorted(work_major_to_minors.keys())
+
+            for major in subject_major_to_minors:
+                subject_major_to_minors[major] = sorted(subject_major_to_minors[major])
+            for major in work_major_to_minors:
+                work_major_to_minors[major] = sorted(work_major_to_minors[major])
+
+            # 새 헤더: 주제_대분류명, ..., 작업유형_대분류명, ...
+            headers = []
+            for major in subject_majors:
+                headers.append(f"주제_{major}")
+            for major in work_majors:
+                headers.append(f"작업유형_{major}")
+
+            # 최대 행 수 계산
+            max_minors = 0
+            for minors in subject_major_to_minors.values():
+                max_minors = max(max_minors, len(minors))
+            for minors in work_major_to_minors.values():
+                max_minors = max(max_minors, len(minors))
+
+            # 데이터 준비
+            rows = [headers]
+            for i in range(max_minors):
+                row = []
+                for major in subject_majors:
+                    minors = subject_major_to_minors[major]
+                    if i < len(minors):
+                        row.append(minors[i])
+                    else:
+                        row.append("")
+                for major in work_majors:
+                    minors = work_major_to_minors[major]
+                    if i < len(minors):
+                        row.append(minors[i])
+                    else:
+                        row.append("")
+                rows.append(row)
+
+            # 시트 클리어 후 재작성
+            tax_worksheet.clear()
+            tax_worksheet.append_rows(rows)
+
+            # Named Range 생성
+            self._create_named_ranges_for_taxonomy(tax_worksheet, headers, max_minors)
+
+            result["success"] = True
+            logger.info(f"taxonomy 시트 마이그레이션 완료: 주제 {len(subject_majors)}개, 작업유형 {len(work_majors)}개")
+            logger.info(f"  주제 대분류: {subject_majors}")
+            logger.info(f"  작업유형 대분류: {work_majors}")
+            for major in subject_majors:
+                logger.info(f"    주제_{major}: {subject_major_to_minors[major]}")
+            for major in work_majors:
+                logger.info(f"    작업유형_{major}: {work_major_to_minors[major]}")
+
+        except Exception as e:
+            result["error"] = str(e)
+            logger.error(f"taxonomy 시트 마이그레이션 실패: {e}")
+
+        return result
+
+    def set_dropdown_validation(self, yyyymm: str) -> Dict:
+        """
+        검수 컬럼에 드롭다운 유효성 검사 설정
+        - 대분류: _taxonomy 시트 헤더에서 추출한 목록
+        - 중분류: INDIRECT 수식으로 Named Range 참조 (동적 종속 드롭다운)
+
+        Args:
+            yyyymm: 대상 월 (탭 이름)
+
+        Returns:
+            dict: {"success": bool, "error": str}
+        """
+        result = {
+            "success": False,
+            "error": "",
+        }
+
+        if not self.is_available():
+            result["error"] = self._init_error or "GSpread 미초기화"
+            return result
+
         try:
             worksheet = self.spreadsheet.worksheet(yyyymm)
-            
+
             # 현재 데이터 행 수 확인
             data = worksheet.get_all_values()
             if len(data) < 2:
                 result["error"] = "데이터 없음"
                 return result
-            
+
             num_rows = len(data)
             header = data[0]
-            
-            # _taxonomy 시트에서 대분류 unique 값 가져오기
+
+            # _taxonomy 시트에서 헤더 가져오기 (대분류별 열 구조)
             tax_worksheet = self.spreadsheet.worksheet("_taxonomy")
             tax_data = tax_worksheet.get_all_values()
-            
-            if len(tax_data) < 2:
+
+            if len(tax_data) < 1:
                 result["error"] = "_taxonomy 시트에 데이터 없음"
                 return result
-            
+
             tax_header = tax_data[0]
-            tax_rows = tax_data[1:]
-            tax_df = pd.DataFrame(tax_rows, columns=tax_header)
-            
-            # 대분류 unique 값 추출
-            subject_majors = sorted(tax_df["주제_대분류"].dropna().unique().tolist())
-            subject_majors = [x for x in subject_majors if x.strip()]
-            
-            work_majors = sorted(tax_df["작업유형_대분류"].dropna().unique().tolist())
-            work_majors = [x for x in work_majors if x.strip()]
-            
+
+            # 헤더에서 대분류 추출 (주제_XXX, 작업유형_XXX)
+            subject_majors = []
+            work_majors = []
+            for h in tax_header:
+                if h.startswith("주제_"):
+                    subject_majors.append(h.replace("주제_", ""))
+                elif h.startswith("작업유형_"):
+                    work_majors.append(h.replace("작업유형_", ""))
+
+            subject_majors = sorted(subject_majors)
+            work_majors = sorted(work_majors)
+
+            # 드롭다운 목록 로깅
+            logger.info(f"=== 드롭다운 목록 ===")
+            logger.info(f"[검수_주제 대분류] {subject_majors}")
+            logger.info(f"[검수_작업유형 대분류] {work_majors}")
+            logger.info(f"[검수완료] ['Y']")
+
             # 대분류 드롭다운 설정 (고정 목록)
             major_validations = {
                 "검수_주제 대분류": subject_majors,
                 "검수_작업유형 대분류": work_majors,
                 "검수완료": ["Y"],
             }
-            
-            # 드롭다운 목록 로깅
-            logger.info(f"=== 드롭다운 목록 ===")
-            logger.info(f"[검수_주제 대분류] {subject_majors}")
-            logger.info(f"[검수_작업유형 대분류] {work_majors}")
-            logger.info(f"[검수완료] ['Y']")
 
             for col_name, values in major_validations.items():
                 if col_name not in header or not values:
@@ -701,123 +928,65 @@ class GSpreadManager:
                 }
                 self.spreadsheet.batch_update(body)
                 logger.debug(f"대분류 드롭다운 설정: {col_name} -> {values}")
-            
-            # 중분류 드롭다운 설정 (대분류에 종속)
-            # 각 행의 대분류 값에 따라 해당하는 중분류 목록만 드롭다운으로 표시
+
+            # 중분류 드롭다운 설정 (INDIRECT로 Named Range 참조)
+            # Named Range 이름: 주제_시설, 주제_서비스, 작업유형_작업, ...
             minor_validations = {
-                "검수_주제 중분류": ("검수_주제 대분류", "주제_대분류", "주제_중분류"),
-                "검수_작업유형 중분류": ("검수_작업유형 대분류", "작업유형_대분류", "작업유형_중분류"),
+                # col_name: (ref_col, prefix)
+                "검수_주제 중분류": ("검수_주제 대분류", "주제_"),
+                "검수_작업유형 중분류": ("검수_작업유형 대분류", "작업유형_"),
             }
 
-            for col_name, (ref_col, tax_major_col, tax_minor_col) in minor_validations.items():
+            for col_name, (ref_col, prefix) in minor_validations.items():
                 if col_name not in header or ref_col not in header:
                     continue
 
                 col_idx = header.index(col_name) + 1
                 ref_col_idx = header.index(ref_col) + 1
+                ref_col_letter = self._col_num_to_letter(ref_col_idx)
 
-                # 대분류별 중분류 매핑 생성
-                major_to_minors = {}
-                for _, row in tax_df.iterrows():
-                    major = str(row.get(tax_major_col, "")).strip()
-                    minor = str(row.get(tax_minor_col, "")).strip()
-                    if major and minor:
-                        if major not in major_to_minors:
-                            major_to_minors[major] = set()
-                        major_to_minors[major].add(minor)
+                # INDIRECT 수식으로 Named Range 참조
+                # 예: =INDIRECT("주제_"&$L2)
+                # Named Range 이름에서 특수문자 처리 필요
+                indirect_formula = f'=INDIRECT("{prefix}"&${ref_col_letter}2)'
 
-                # 정렬
-                for major in major_to_minors:
-                    major_to_minors[major] = sorted(major_to_minors[major])
+                logger.info(f"[{col_name}] INDIRECT 수식: {indirect_formula}")
 
-                # 중분류 매핑 로깅
-                logger.info(f"[{col_name}] 대분류별 중분류 매핑:")
-                for major, minors in sorted(major_to_minors.items()):
-                    logger.info(f"  {major}: {minors}")
-
-                # 모든 중분류 목록 (대분류가 비어있을 때 사용)
-                all_minors = sorted(set(
-                    minor for minors in major_to_minors.values() for minor in minors
-                ))
-
-                # 각 행의 대분류 값 읽기
-                rows_data = data[1:]  # 헤더 제외
-
-                # 대분류별로 행 그룹화
-                major_to_rows = {}  # {major_value: [row_indices]}
-                for row_idx, row in enumerate(rows_data):
-                    if ref_col_idx - 1 < len(row):
-                        major_value = str(row[ref_col_idx - 1]).strip()
-                    else:
-                        major_value = ""
-                    if major_value not in major_to_rows:
-                        major_to_rows[major_value] = []
-                    major_to_rows[major_value].append(row_idx + 1)  # +1 for header
-
-                # 배치 요청 생성
-                requests = []
-                for major_value, row_indices in major_to_rows.items():
-                    # 해당 대분류의 중분류 목록
-                    if major_value and major_value in major_to_minors:
-                        minors = major_to_minors[major_value]
-                    else:
-                        minors = all_minors
-
-                    if not minors:
-                        continue
-
-                    # 연속된 행 범위로 그룹화하여 요청 수 최소화
-                    row_indices_sorted = sorted(row_indices)
-                    ranges = []
-                    start = row_indices_sorted[0]
-                    end = start
-
-                    for idx in row_indices_sorted[1:]:
-                        if idx == end + 1:
-                            end = idx
-                        else:
-                            ranges.append((start, end + 1))
-                            start = idx
-                            end = idx
-                    ranges.append((start, end + 1))
-
-                    # 각 범위에 대해 드롭다운 설정
-                    for start_row, end_row in ranges:
-                        requests.append({
+                # 각 행에 대해 INDIRECT 기반 드롭다운 설정
+                # ONE_OF_RANGE with INDIRECT formula
+                body = {
+                    "requests": [
+                        {
                             "setDataValidation": {
                                 "range": {
                                     "sheetId": worksheet.id,
-                                    "startRowIndex": start_row,
-                                    "endRowIndex": end_row,
+                                    "startRowIndex": 1,
+                                    "endRowIndex": num_rows,
                                     "startColumnIndex": col_idx - 1,
                                     "endColumnIndex": col_idx,
                                 },
                                 "rule": {
                                     "condition": {
-                                        "type": "ONE_OF_LIST",
-                                        "values": [{"userEnteredValue": v} for v in minors]
+                                        "type": "ONE_OF_RANGE",
+                                        "values": [{"userEnteredValue": indirect_formula}]
                                     },
                                     "showCustomUi": True,
                                     "strict": False,
                                 }
                             }
-                        })
+                        }
+                    ]
+                }
+                self.spreadsheet.batch_update(body)
+                logger.debug(f"중분류 INDIRECT 드롭다운 설정: {col_name}")
 
-                # 배치 요청 실행 (100개씩 나눠서)
-                for i in range(0, len(requests), 100):
-                    batch = requests[i:i+100]
-                    if batch:
-                        self.spreadsheet.batch_update({"requests": batch})
-
-                logger.debug(f"중분류 드롭다운 설정: {col_name} ({len(major_to_minors)}개 대분류)")
-            
             result["success"] = True
             logger.info(f"드롭다운 유효성 검사 설정 완료: {yyyymm}")
-            
+
         except Exception as e:
             result["error"] = str(e)
             logger.error(f"드롭다운 설정 실패: {e}")
-        
+
         return result
 
 
