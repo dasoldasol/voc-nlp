@@ -664,12 +664,18 @@ class GSpreadManager:
                 "검수완료": ["Y"],
             }
             
+            # 드롭다운 목록 로깅
+            logger.info(f"=== 드롭다운 목록 ===")
+            logger.info(f"[검수_주제 대분류] {subject_majors}")
+            logger.info(f"[검수_작업유형 대분류] {work_majors}")
+            logger.info(f"[검수완료] ['Y']")
+
             for col_name, values in major_validations.items():
                 if col_name not in header or not values:
                     continue
-                
+
                 col_idx = header.index(col_name) + 1
-                
+
                 body = {
                     "requests": [
                         {
@@ -696,67 +702,114 @@ class GSpreadManager:
                 self.spreadsheet.batch_update(body)
                 logger.debug(f"대분류 드롭다운 설정: {col_name} -> {values}")
             
-            # 중분류 드롭다운 설정 (대분류에 종속 - FILTER 수식 사용)
-            # 검수_주제 중분류: 검수_주제 대분류 값에 따라 필터링
+            # 중분류 드롭다운 설정 (대분류에 종속)
+            # 각 행의 대분류 값에 따라 해당하는 중분류 목록만 드롭다운으로 표시
             minor_validations = {
                 "검수_주제 중분류": ("검수_주제 대분류", "주제_대분류", "주제_중분류"),
                 "검수_작업유형 중분류": ("검수_작업유형 대분류", "작업유형_대분류", "작업유형_중분류"),
             }
-            
+
             for col_name, (ref_col, tax_major_col, tax_minor_col) in minor_validations.items():
                 if col_name not in header or ref_col not in header:
                     continue
-                
+
                 col_idx = header.index(col_name) + 1
                 ref_col_idx = header.index(ref_col) + 1
-                ref_col_letter = self._col_num_to_letter(ref_col_idx)
-                
-                # tax_major_col과 tax_minor_col의 인덱스 찾기
-                tax_major_idx = tax_header.index(tax_major_col) + 1
-                tax_minor_idx = tax_header.index(tax_minor_col) + 1
-                tax_major_letter = self._col_num_to_letter(tax_major_idx)
-                tax_minor_letter = self._col_num_to_letter(tax_minor_idx)
-                
-                # 각 행마다 개별적으로 수식 기반 유효성 검사 설정
-                # ONE_OF_RANGE with FILTER 수식은 지원되지 않으므로,
-                # 대신 모든 중분류를 허용하고 사용자가 올바른 값을 선택하도록 유도
-                # 또는 모든 중분류 값을 목록으로 제공
-                
-                # 해당 대분류에 속하는 모든 중분류 수집
-                if tax_major_col == "주제_대분류":
-                    all_minors = sorted(tax_df["주제_중분류"].dropna().unique().tolist())
-                else:
-                    all_minors = sorted(tax_df["작업유형_중분류"].dropna().unique().tolist())
-                all_minors = [x for x in all_minors if x.strip()]
-                
-                if not all_minors:
-                    continue
-                
-                body = {
-                    "requests": [
-                        {
+
+                # 대분류별 중분류 매핑 생성
+                major_to_minors = {}
+                for _, row in tax_df.iterrows():
+                    major = str(row.get(tax_major_col, "")).strip()
+                    minor = str(row.get(tax_minor_col, "")).strip()
+                    if major and minor:
+                        if major not in major_to_minors:
+                            major_to_minors[major] = set()
+                        major_to_minors[major].add(minor)
+
+                # 정렬
+                for major in major_to_minors:
+                    major_to_minors[major] = sorted(major_to_minors[major])
+
+                # 중분류 매핑 로깅
+                logger.info(f"[{col_name}] 대분류별 중분류 매핑:")
+                for major, minors in sorted(major_to_minors.items()):
+                    logger.info(f"  {major}: {minors}")
+
+                # 모든 중분류 목록 (대분류가 비어있을 때 사용)
+                all_minors = sorted(set(
+                    minor for minors in major_to_minors.values() for minor in minors
+                ))
+
+                # 각 행의 대분류 값 읽기
+                rows_data = data[1:]  # 헤더 제외
+
+                # 대분류별로 행 그룹화
+                major_to_rows = {}  # {major_value: [row_indices]}
+                for row_idx, row in enumerate(rows_data):
+                    if ref_col_idx - 1 < len(row):
+                        major_value = str(row[ref_col_idx - 1]).strip()
+                    else:
+                        major_value = ""
+                    if major_value not in major_to_rows:
+                        major_to_rows[major_value] = []
+                    major_to_rows[major_value].append(row_idx + 1)  # +1 for header
+
+                # 배치 요청 생성
+                requests = []
+                for major_value, row_indices in major_to_rows.items():
+                    # 해당 대분류의 중분류 목록
+                    if major_value and major_value in major_to_minors:
+                        minors = major_to_minors[major_value]
+                    else:
+                        minors = all_minors
+
+                    if not minors:
+                        continue
+
+                    # 연속된 행 범위로 그룹화하여 요청 수 최소화
+                    row_indices_sorted = sorted(row_indices)
+                    ranges = []
+                    start = row_indices_sorted[0]
+                    end = start
+
+                    for idx in row_indices_sorted[1:]:
+                        if idx == end + 1:
+                            end = idx
+                        else:
+                            ranges.append((start, end + 1))
+                            start = idx
+                            end = idx
+                    ranges.append((start, end + 1))
+
+                    # 각 범위에 대해 드롭다운 설정
+                    for start_row, end_row in ranges:
+                        requests.append({
                             "setDataValidation": {
                                 "range": {
                                     "sheetId": worksheet.id,
-                                    "startRowIndex": 1,
-                                    "endRowIndex": num_rows,
+                                    "startRowIndex": start_row,
+                                    "endRowIndex": end_row,
                                     "startColumnIndex": col_idx - 1,
                                     "endColumnIndex": col_idx,
                                 },
                                 "rule": {
                                     "condition": {
                                         "type": "ONE_OF_LIST",
-                                        "values": [{"userEnteredValue": v} for v in all_minors]
+                                        "values": [{"userEnteredValue": v} for v in minors]
                                     },
                                     "showCustomUi": True,
                                     "strict": False,
                                 }
                             }
-                        }
-                    ]
-                }
-                self.spreadsheet.batch_update(body)
-                logger.debug(f"중분류 드롭다운 설정: {col_name} -> {len(all_minors)}개 항목")
+                        })
+
+                # 배치 요청 실행 (100개씩 나눠서)
+                for i in range(0, len(requests), 100):
+                    batch = requests[i:i+100]
+                    if batch:
+                        self.spreadsheet.batch_update({"requests": batch})
+
+                logger.debug(f"중분류 드롭다운 설정: {col_name} ({len(major_to_minors)}개 대분류)")
             
             result["success"] = True
             logger.info(f"드롭다운 유효성 검사 설정 완료: {yyyymm}")
