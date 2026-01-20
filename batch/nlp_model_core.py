@@ -170,6 +170,29 @@ def _overlap_with_title(sent_norm: str, title_norm: str, overlap_ratio: float) -
     return inter >= max(1, int(overlap_ratio * len(stoks)))
 
 
+# ===== 복합 키워드 매칭 =====
+def _match_compound_keyword(pattern: str, text: str) -> bool:
+    """
+    복합 키워드 매칭: 패턴의 모든 단어가 텍스트에 포함되어 있으면 매칭
+    - 단일 단어: 기존과 동일 (부분 문자열 검사)
+    - 복합 단어 (공백 포함): 모든 단어가 텍스트에 있으면 매칭
+
+    예시:
+      - "교체" in "세면대 부품 교체 작업" → True
+      - "세면대 교체" → "세면대" in text AND "교체" in text → True
+    """
+    if not pattern or not text:
+        return False
+
+    words = pattern.split()
+    if len(words) == 1:
+        # 단일 단어: 기존 로직 (부분 문자열)
+        return pattern in text
+    else:
+        # 복합 단어: 모든 단어가 텍스트에 포함
+        return all(w in text for w in words)
+
+
 # ===== 분류기 =====
 def classify_weighted_general(
     all_text: str,
@@ -216,7 +239,7 @@ def classify_weighted_general(
             hits = 0
             length_bonus = 0
             for p in norm_ps:
-                if p and (p in s_norm):
+                if p and _match_compound_keyword(p, s_norm):
                     hits += 1
                     length_bonus += len(p)
             if hits > 0:
